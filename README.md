@@ -13,11 +13,11 @@ Expect bugs !
 
 ## Installation
 
-The code needs [cx_Oracle](TODO) Python library to work. For the moment it is not included in QGis binary installation, so you have to install it first.
+The code needs [cx_Oracle](http://cx-oracle.sourceforge.net/) Python library to work. For the moment it is not included in QGis binary installation, so you have to install it first.
 
-If you are running a GNU/Linux distribution and have installed QGis from the official repositories, you can try to apt-get install cx_oracle.
+If you are running a GNU/Linux distribution and have installed QGis from the official repositories, you'll have to install Oracle Client and SDK and then install cx_Oracle. [Read this](https://stackoverflow.com/a/9859027)...
 
-If you are running QGis on MS-Windows, you have to [download](TODO) the good version of cx_Oracle binaries (32 or 64 bits) and copy cx_Oracle.pyd file in C:\Program Files\QGis Chugiak/apps/Python2.7/DLL .
+If you are running QGis on MS-Windows, you have to [download](https://pypi.python.org/pypi/cx_Oracle/5.1.3) the good version of cx_Oracle binaries (32 or 64 bits) and extract and copy cx_Oracle.pyd file in C:\Program Files\QGis Chugiak/apps/Python2.7/DLL .
 
 Once cx_Oracle is correctly installed, you just have to copy the entire oracle directory in the db_plugins directory of the db_manager installation. (C:\Program Files\QGis Chugiak/apps/qgis/python/plugins/db_manager/db_plugins under MS-Windows).
 
@@ -36,7 +36,7 @@ Once cx_Oracle is correctly installed, you just have to copy the entire oracle d
 
 ## Bug reports
 
-For the moment, use the "issues" tool of GitHub to report bugs. 
+For the moment, use the ["issues" tool of GitHub](https://github.com/medspx/dbmanager-oracle/issues) to report bugs. 
 
 
 ## Main goal
