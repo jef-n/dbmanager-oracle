@@ -139,11 +139,16 @@ class OracleDBPlugin(DBPlugin):
 
 class ORDatabase(Database):
 	def __init__(self, connection, uri):
+		self.connName = connection.connectionName()
 		Database.__init__(self, connection, uri)
+                with open('C:/TEMP/test.txt', 'w') as the_file:
+                        the_file.write('Hello\n')
+                        the_file.write(u"Debug: %s" % connection.connectionName())
+
                 self.schema_lst = []
 
 	def connectorsFactory(self, uri):
-		return OracleDBConnector(uri)
+		return OracleDBConnector(uri, self.connName)
 
 	def dataTablesFactory(self, row, db, schema=None):
 		return ORTable(row, db, schema)
@@ -175,7 +180,7 @@ class ORDatabase(Database):
                 # handling undetermined geometry type
                 if not vlayer.isValid():
                         con = self.database().connector
-                        wkbType = con.getTableGeomType(u"(%s)" % sql, geomCol)
+                        wkbType = con.getTableMainGeomType(u"(%s)" % sql, geomCol)
                         uri.setWkbType(wkbType)
                         vlayer = QgsVectorLayer(uri.uri(), layerName, provider)
                         
@@ -273,8 +278,7 @@ class ORTable(Table):
 		uniqueCol = self.getValidQGisUniqueFields(True) if self.isView else None
 		uri.setDataSource(schema, self.name, geomCol if geomCol else None, None, uniqueCol.name if uniqueCol else "" )
                 if geomCol:
-                        wkbType = self.database().connector.getTableGeomType(self.name, geomCol)
-                        uri.setWkbType(wkbType)
+                        uri.setWkbType(self.wkbType)
 
 		return uri
 
@@ -282,9 +286,9 @@ class ORTable(Table):
 
 class ORVectorTable(ORTable, VectorTable):
 	def __init__(self, row, db, schema=None):
-		ORTable.__init__(self, row[:-4], db, schema)
+		ORTable.__init__(self, row[:-5], db, schema)
 		VectorTable.__init__(self, db, schema)
-		self.geomColumn, self.geomType, self.geomDim, self.srid = row[-4:]
+		self.geomColumn, self.geomType, self.wkbType, self.geomDim, self.srid = row[-5:]
 
 	def info(self):
 		from .info_model import ORVectorTableInfo

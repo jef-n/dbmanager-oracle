@@ -31,15 +31,17 @@ from ..plugin import ConnectionError, DbError, Table
 
 import os
 import cx_Oracle
-from qgis.core import QgsMessageLog, QGis
+from qgis.core import QGis, QgsApplication, QgsMessageLog
+import sqlite3
 
 def classFactory():
 	return OracleDBConnector
 
 class OracleDBConnector(DBConnector):
-	def __init__(self, uri):
+	def __init__(self, uri, connName):
 		DBConnector.__init__(self, uri)
 
+                self.connName = connName
 		self.host = uri.host() or os.environ.get('PGHOST')
 		self.port = uri.port() or os.environ.get('PGPORT')
 		self.user = uri.username() or os.environ.get('PGUSER') or os.environ.get('USER')
@@ -47,7 +49,7 @@ class OracleDBConnector(DBConnector):
 		self.passwd = uri.password() or os.environ.get('PGPASSWORD')
                 
                 # Connexion options
-                self.useEstimatedMetadata = uri.useEstimatedMetadata
+                self.useEstimatedMetadata = uri.useEstimatedMetadata()
                 self.userTablesOnly = uri.param('userTablesOnly').lower() == "true"
                 self.geometryColumnsOnly = uri.param('geometryColumnsOnly').lower() == "true"
                 self.allowGeometrylessTables = uri.param('allowGeometrylessTables').lower() == "true"
@@ -59,8 +61,29 @@ class OracleDBConnector(DBConnector):
 		except self.connection_error_types(), e:
 			raise ConnectionError(e)
 
+                # Find if we can connect to data_sources_cache.db
+                sqlite_cache_file = os.path.join(QgsApplication.qgisSettingsDirPath(), u"data_sources_cache.db")
+                if (os.path.isfile(sqlite_cache_file)):
+                    try:
+                            self.cache_connection = sqlite3.connect(sqlite_cache_file)
+                    except sqlite3.Error as e:
+
+                            self.cache_connection = False
+
+                # Find if there is cache for our connection:
+                if self.cache_connection:
+                        try:
+                                cache_c = self.cache_connection.cursor()
+                                cache_c.execute(u"SELECT COUNT(*) FROM meta_oracle WHERE conn ='%s'" % self.connName )
+                                has_cached = cache_c.fetchone()[0]
+                                cache_c.close()
+                                if not (has_cached and int(has_cached) > 0):
+                                        self.cache_connection = False
+
+                        except sqlite3.Error as e:
+                                self.cache_connection = False
+
 		self._checkSpatial()
-                #QgsMessageLog.logMessage("Oracle Spatial:"+str(uri.uri()), 'DBManager', QgsMessageLog.INFO)
 		self._checkGeometryColumnsTable()
                 
 	def _connectionInfo(self):
@@ -97,6 +120,12 @@ class OracleDBConnector(DBConnector):
 		res = self._fetchone(c)
 		c.close()
 		return res
+
+        def hasCache(self):
+                """ returns self.cache_connection """
+                if self.cache_connection:
+                        return True
+                return False
 
 	def getSpatialInfo(self):
 		""" returns Oracle Spatial version """
@@ -175,11 +204,24 @@ class OracleDBConnector(DBConnector):
 		return result
 
 
+        def getSchemasCache(self):
+                sql = u"""SELECT DISTINCT ownername FROM "oracle_%s" ORDER BY ownername""" % self.connName
+                c = self.cache_connection.cursor()
+                c.execute(sql)
+                res = c.fetchall()
+                c.close()
+                
+                return res
+
 	def getSchemas(self):
 		""" get list of schemas in tuples: (oid, name, owner, perms, comment) """
                 if self.userTablesOnly:
                         return [(self.user,)]
+
+                if self.hasCache:
+                        return self.getSchemasCache()
                 
+                # Use cache if avalaible:
                 metatable = u"all_objects WHERE object_type IN ('TABLE','VIEW','SYNONYM')"
                 if self.geometryColumnsOnly:
                         metatable = u"all_sdo_geom_metadata"
@@ -194,6 +236,9 @@ class OracleDBConnector(DBConnector):
 
 	def getTables(self, schema=None):
 		""" get list of tables """
+
+                if self.hasCache():
+                        return self.getTablesCache(schema)
 
 		tablenames = []
 		items = []
@@ -242,6 +287,118 @@ class OracleDBConnector(DBConnector):
 
 		return sorted( items, cmp=lambda x,y: cmp((x[2],x[1]), (y[2],y[1])) )
 
+        def getTablesCache(self, schema=None):
+		""" get list of tables from SQLite cache"""
+
+		tablenames = []
+		items = []
+
+		try:
+			vectors = self.getVectorTablesCache(schema)
+			for tbl in vectors:
+				tablenames.append( (tbl[2], tbl[1]) )
+				items.append( tbl )
+		except DbError:
+			pass
+
+                if not self.allowGeometrylessTables:
+                        return sorted( items, cmp=lambda x,y: cmp((x[2],x[1]), (y[2],y[1])) )
+
+		# get all non geographic tables and views
+                schema_where = u""
+                if self.userTablesOnly:
+                        schema_where = u"AND ownername = '%s'" % self.user
+                if schema and not self.userTablesOnly:
+                        schema_where = u"AND ownername = '%s'" % schema
+
+                sql = u"""SELECT tablename, ownername, isview, ownername,
+                                 0 As rowcount, null As comment
+                          FROM "oracle_%s"
+                          WHERE geometrycolname IS '' %s
+                          ORDER BY tablename""" % (self.connName, schema_where)
+
+                c = self.cache_connection.cursor()
+                c.execute(sql)
+		for tbl in c.fetchall():
+			if tablenames.count( (tbl[1], tbl[0]) ) <= 0:
+				item = list(tbl)
+				item.insert(0, Table.TableType)
+				items.append( item )
+		c.close()
+
+		return sorted( items, cmp=lambda x,y: cmp((x[2],x[1]), (y[2],y[1])) )
+
+        def getVectorTablesCache(self, schema=None):
+                """ get list of table with a geometry column from SQLite cache
+			it returns:
+				name (table name)
+				namespace (schema)
+				type = 'view' (is a view?)
+				owner
+				estimated row_nums
+				comment (only for tables not materialized views)
+				geometry_column
+				geometry_type (as WKB type)
+				coord_dimension (always NULL for the moment)
+				srid
+		"""
+                schema_where = u""
+                if self.userTablesOnly:
+                        schema_where = u"AND ownername = '%s'" % self.user
+                if schema and not self.userTablesOnly:
+                        schema_where = u"AND ownername = '%s'" % schema
+
+                sql = u"""SELECT tablename, ownername, isview, ownername,
+                                 0 As rowcount, null As comment, geometrycolname,
+                                 geomtypes, null As wkbtype, 2, geomsrids
+                          FROM "oracle_%s"
+                          WHERE geometrycolname IS NOT '' %s 
+                          ORDER BY tablename""" % (self.connName, schema_where)
+
+                items = []
+
+                c = self.cache_connection.cursor()
+                c.execute(sql)
+                lst_tables = c.fetchall()
+                c.close()
+
+                # Handle multiple geometries tables
+		for i, tbl in enumerate(lst_tables):
+                        item = list(tbl)
+                        item.insert(0, Table.VectorType)
+                        if len(item[-4]) > 0 and len(item[-1]) > 0:
+                                geomtypes = [int(l) for l in unicode(item[-4]).split(u",")]
+                                srids = [int(l) for l in unicode(item[-1]).split(u",")]
+                                # Intelligent wkbtype grouping (multi with non multi)
+                                if QGis.WKBPolygon in geomtypes and QGis.WKBMultiPolygon in geomtypes:
+                                        srids.pop(geomtypes.index(QGis.WKBPolygon))
+                                        geomtypes.pop(geomtypes.index(QGis.WKBPolygon))
+                                elif QGis.WKBPoint in geomtypes and QGis.WKBMultiPoint in geomtypes:
+                                        srids.pop(geomtypes.index(QGis.WKBPoint))
+                                        geomtypes.pop(geomtypes.index(QGis.WKBPoint))
+                                elif QGis.WKBLineString in geomtypes and QGis.WKBMultiLineString in geomtypes:
+                                        srids.pop(geomtypes.index(QGis.WKBLineString))
+                                        geomtypes.pop(geomtypes.index(QGis.WKBLineString))
+                                        
+                                for j in range(len(geomtypes)):
+                                        buf = list(item)
+                                        geomtype = geomtypes[j]
+                                        srid = srids[j]
+                                        if geomtype in ( QGis.WKBPoint, QGis.WKBMultiPoint):
+                                                geo = u"POINT"
+                                        elif geomtype in ( QGis.WKBLineString, QGis.WKBMultiLineString):
+                                                geo = u"LINESTRING"
+                                        elif geomtype in ( QGis.WKBPolygon, QGis.WKBMultiPolygon):
+                                                geo = u"POLYGON"
+                                        else:
+                                                geo = u"UNKNOWN"
+
+                                        buf[-4]=geo
+                                        buf[-3]=geomtype
+                                        buf[-1]=srid
+                                        items.append(buf)
+
+                return items
 
 	def getVectorTables(self, schema=None):
 		""" get list of table with a geometry column
@@ -257,7 +414,6 @@ class OracleDBConnector(DBConnector):
 				coord_dimension (always NULL for the moment)
 				srid
 		"""
-
 		if not self.has_spatial:
 			return []
 
@@ -277,7 +433,8 @@ class OracleDBConnector(DBConnector):
                                  d.num_rows,
                                  e.comments,
                                  c.column_name,
-                                 NULL,
+                                 NULL as geomtypes,
+                                 NULL as wkbtype,
                                  NULL,
                                  c.srid
                           FROM %s_sdo_geom_metadata c
@@ -303,25 +460,79 @@ class OracleDBConnector(DBConnector):
                                 table_name = u"%s.%s" % (self.quoteId(schema), self.quoteId(item[0]))
                         else:
                                 table_name = self.quoteId(item[0])
-                        geocol = self.quoteId(item[-4])
-                        wkbType = self.getTableGeomType(table_name, geocol)
-                        if wkbType in ( QGis.WKBPoint, QGis.WKBMultiPoint):
-                                geomtype = u"POINT"
-                        elif wkbType in ( QGis.WKBLineString, QGis.WKBMultiLineString):
-                                geomtype = u"LINESTRING"
-                        elif wkbType in ( QGis.WKBPolygon, QGis.WKBMultiPolygon):
-                                geomtype = u"POLYGON"
-                        else:
-                                geomtype = u"UNKNOWN"
-                        item[-3] = geomtype
-                        item[-2] = 2
+                        geocol = self.quoteId(item[-5])
+                        geomtypes = self.getTableGeomTypes(table_name, geocol)
 			item.insert(0, Table.VectorType)
-			items.append( item )
+
+                        # Intelligent wkbtype grouping (multi with non multi)
+                        if QGis.WKBPolygon in geomtypes and QGis.WKBMultiPolygon in geomtypes:
+                                geomtypes.pop(geomtypes.index(QGis.WKBPolygon))
+                        elif QGis.WKBPoint in geomtypes and QGis.WKBMultiPoint in geomtypes:
+                                geomtypes.pop(geomtypes.index(QGis.WKBPoint))
+                        elif QGis.WKBLineString in geomtypes and QGis.WKBMultiLineString in geomtypes:
+                                geomtypes.pop(geomtypes.index(QGis.WKBLineString))
+                                        
+                        for j in range(len(geomtypes)):
+                                buf = list(item)
+                                buf[-2] = 2
+                                geomtype = geomtypes[j]
+                                if geomtype in ( QGis.WKBPoint, QGis.WKBMultiPoint):
+                                        geo = u"POINT"
+                                elif geomtype in ( QGis.WKBLineString, QGis.WKBMultiLineString):
+                                        geo = u"LINESTRING"
+                                elif geomtype in ( QGis.WKBPolygon, QGis.WKBMultiPolygon):
+                                        geo = u"POLYGON"
+                                else:
+                                        geo = u"UNKNOWN"
+
+                                buf[-4]=geo
+                                buf[-3]=geomtype
+                                items.append(buf)
 
 		return items
 
+        def getTableGeomTypes(self, table, geomCol):
+                """ Return all the wkbTypes for a table by requesting geometry column"""
 
-        def getTableGeomType(self, table, geomCol):
+                estimated = u""
+                if self.useEstimatedMetadata:
+                        from qgis.core import QgsMessageLog
+                        QgsMessageLog.logMessage("estimated", 'DBManager', QgsMessageLog.INFO)
+                        estimated = u"AND ROWNUM < 100"
+
+                # Grab all of geometry types from the layer
+                query =  u"""SELECT DISTINCT a.%s.SDO_GTYPE As gtype
+                           FROM %s a
+                           WHERE a.%s IS NOT NULL %s
+                           ORDER BY a.%s.SDO_GTYPE""" % (geomCol, table, geomCol, estimated, geomCol)
+                
+		try:
+			c = self._execute(None, query)
+		except DbError, e:	# handle error views or other problems
+			return [QGis.WKBUnknown]
+
+                rows = self._fetchall(c)
+                c.close()
+
+                # Handle results
+                if len(rows) == 0:
+                        return [QGis.WKBUnknown]
+
+                # A dict to store the geomtypes
+                geomtypes = []
+
+                for row in rows:
+                        if row[0] == 2001: geomtypes.append(QGis.WKBPoint)
+                        elif row[0] == 2002: geomtypes.append(QGis.WKBLineString)
+                        elif row[0] == 2003: geomtypes.append(QGis.WKBPolygon)
+                        elif row[0] == 2005: geomtypes.append(QGis.WKBMultiPoint)
+                        elif row[0] == 2006: geomtypes.append(QGis.WKBMultiLineString)
+                        elif row[0] == 2007: geomtypes.append(QGis.WKBMultiPolygon)
+
+                return geomtypes
+
+
+        def getTableMainGeomType(self, table, geomCol):
                 """ Return the best wkbType for a table by requesting geometry column"""
 
                 wkbType = QGis.WKBUnknown
@@ -386,6 +597,7 @@ class OracleDBConnector(DBConnector):
 
                 
                 return wkbType
+
 
 	def getTableRowCount(self, table):
                 """ returns the number of rows of the table """
@@ -519,8 +731,13 @@ class OracleDBConnector(DBConnector):
 	def getTableExtent(self, table, geom):
 		""" find out table extent """
 		schema, tablename = self.getSchemaTableName(table)
-                tablename = u"'%s.%s'" % (schema, tablename)
-                sql =u"SELECT SDO_AGGR_MBR(%s).SDO_ORDINATES FROM %s" % (self.quoteId(geom), self.quoteId(table))
+                tablename = "'%s.%s'" % (schema, tablename)
+                # if table as spatial index:
+                if self.getTableIndexes(table):
+                        sql = u"SELECT SDO_TUNE.EXTENT_OF(%s, %s).SDO_ORDINATES FROM DUAL" % (tablename, self.quoteString(geom))
+                else:
+                        sql =u"SELECT SDO_AGGR_MBR(%s).SDO_ORDINATES FROM %s" % (self.quoteId(geom), self.quoteId(table))
+
 		try:
 			c = self._execute(None, sql)
 		except DbError, e:	# no spatial index on table, try aggregation

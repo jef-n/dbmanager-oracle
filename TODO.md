@@ -1,8 +1,5 @@
 # TODO
 
-## General
-
-* Use the internal QGis SQLite table list cache.
 
 ## Table Menu
 
@@ -13,6 +10,7 @@
 
 ## General 
 
+* Use the internal QGis SQLite table list cache.
 * Add table and column names in sqldictionnary/
 * Modify Copyrights.
 * Add Fields comment.

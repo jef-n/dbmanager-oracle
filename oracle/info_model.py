@@ -33,6 +33,15 @@ class ORDatabaseInfo(DatabaseInfo):
 	def __init__(self, db):
 		self.db = db
 
+	def connectionDetails(self):
+		tbl = [
+			(QApplication.translate("DBManagerPlugin", "Host:"), self.db.connector.host),
+			(QApplication.translate("DBManagerPlugin", "User:"), self.db.connector.user),
+                        (QApplication.translate("DBManagerPlugin", "SQLite list tables cache:"), "Enabled" if self.db.connector.hasCache else "Unavailable")
+                ]
+
+		return HtmlTable( tbl )
+
 	def spatialInfo(self):
 		ret = []
 
@@ -279,7 +288,8 @@ class ORVectorTableInfo(ORTableInfo, VectorTableInfo):
 
 		tbl = [
 			(QApplication.translate("DBManagerPlugin", "Column:"), self.table.geomColumn),
-			(QApplication.translate("DBManagerPlugin", "Geometry:"), self.table.geomType)
+			(QApplication.translate("DBManagerPlugin", "Geometry:"), self.table.geomType),
+                        (QApplication.translate("DBManagerPlugin", "QGis Geometry type:"), self.table.wkbType)
 		]
 
 		# only if we have info from geometry_columns
