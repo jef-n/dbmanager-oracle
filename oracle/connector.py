@@ -1152,19 +1152,40 @@ class OracleDBConnector(DBConnector):
 
 		# get schemas, tables and field names
 		items = []
-        
+
+                # First look into the cache if available
+                if self.hasCache():
+                        sql = u"""SELECT DISTINCT tablename FROM "oracle_%s" 
+                                  UNION
+                                  SELECT DISTINCT ownername FROM "oracle_%s" """ % (self.connName, self.connName)
+                        if self.userTablesOnly:
+                                sql = u"""SELECT DISTINCT tablename FROM "oracle_%s" WHERE ownername = '%s'
+                                          UNION
+                                          SELECT DISTINCT ownername FROM "oracle_%s" WHERE ownername = '%s' """ % (self.connName, self.user, self.connName, self.user)
+
+                        c = self.cache_connection.cursor()
+                        c.execute(sql)
+                        for row in c.fetchall():
+                                items.append(row[0])
+                        c.close()
+
+
                 if self.userTablesOnly:
                         sql = u"""SELECT DISTINCT TABLE_NAME FROM USER_ALL_TABLES
                                   UNION
                                   SELECT USER FROM DUAL
                                   UNION
                                   SELECT DISTINCT COLUMN_NAME FROM USER_TAB_COLUMNS"""
+                        if self.hasCache():
+                                sql = u"""SELECT DISTINCT COLUMN_NAME FROM USER_TAB_COLUMNS"""
                 else:
                         sql = u"""SELECT TABLE_NAME FROM ALL_ALL_TABLES
                                   UNION
                                   SELECT DISTINCT OWNER FROM ALL_ALL_TABLES
                                   UNION
                                   SELECT DISTINCT COLUMN_NAME FROM ALL_TAB_COLUMNS"""
+                        if self.hasCache():
+                                sql = u"""SELECT DISTINCT COLUMN_NAME FROM ALL_TAB_COLUMNS"""
 
 		c = self._execute(None, sql)
 		for row in self._fetchall(c):
