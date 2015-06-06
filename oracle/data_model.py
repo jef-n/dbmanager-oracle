@@ -30,94 +30,96 @@ from ..data_model import TableDataModel, SqlResultModel, BaseTableModel
 from ..plugin import BaseError
 from qgis.core import *
 
+
 class ORTableDataModel(TableDataModel):
-	def __init__(self, table, parent=None):
-		self.cursor = None
-		TableDataModel.__init__(self, table, parent)
 
-		if self.table.rowCount == None:
-			self.table.refreshRowCount()
-			if self.table.rowCount == None:
-				return
+    def __init__(self, table, parent=None):
+        self.cursor = None
+        TableDataModel.__init__(self, table, parent)
 
-		self.connect(self.table, SIGNAL("aboutToChange"), self._deleteCursor)
-		self._createCursor()
+        if self.table.rowCount == None:
+            self.table.refreshRowCount()
+            if self.table.rowCount == None:
+                return
 
-	def _createCursor(self):
-		fields_txt = u", ".join(self.fields)
-		table_txt = self.db.quoteId( (self.table.schemaName(), self.table.name) )
+        self.connect(self.table, SIGNAL("aboutToChange"), self._deleteCursor)
+        self._createCursor()
 
-		self.cursor = self.db._get_cursor()
-		sql = u"SELECT %s FROM %s" % (fields_txt, table_txt)
+    def _createCursor(self):
+        fields_txt = u", ".join(self.fields)
+        table_txt = self.db.quoteId(
+            (self.table.schemaName(), self.table.name))
 
-		self.db._execute(self.cursor, sql)
+        self.cursor = self.db._get_cursor()
+        sql = u"SELECT %s FROM %s" % (fields_txt, table_txt)
 
-	def _sanitizeTableField(self, field):
-		# get fields, ignore geometry columns
-                #TODO: return the geometry type of the table
-		if field.dataType.lower() == "sdo_geometry":
-                        return u"CASE WHEN %(fld)s IS NULL THEN NULL ELSE 'GEOMETRY' END AS %(fld)s" % {'fld': self.db.quoteId(field.name)}
-                if field.dataType.lower() == "date":
-                        return u"CAST(%s AS VARCHAR2(8))" % self.db.quoteId(field.name)
+        self.db._execute(self.cursor, sql)
 
-		return u"CAST(%s As VARCHAR2(%s))" % (self.db.quoteId(field.name), field.charMaxLen)
+    def _sanitizeTableField(self, field):
+        # get fields, ignore geometry columns
+        # TODO: return the geometry type of the table
+        if field.dataType.lower() == "sdo_geometry":
+            return u"CASE WHEN %(fld)s IS NULL THEN NULL ELSE 'GEOMETRY' END AS %(fld)s" % {'fld': self.db.quoteId(field.name)}
+        if field.dataType.lower() == "date":
+            return u"CAST(%s AS VARCHAR2(8))" % self.db.quoteId(field.name)
 
-	def _deleteCursor(self):
-		self.db._close_cursor(self.cursor)
-		self.cursor = None
+        return u"CAST(%s As VARCHAR2(%s))" % (self.db.quoteId(field.name), field.charMaxLen)
 
-	def __del__(self):
-		self.disconnect(self.table, SIGNAL("aboutToChange"), self._deleteCursor)
-		self._deleteCursor()
-		pass	#print "PGTableModel.__del__"
+    def _deleteCursor(self):
+        self.db._close_cursor(self.cursor)
+        self.cursor = None
 
-	def fetchMoreData(self, row_start):
-		if not self.cursor:
-			self._createCursor()
+    def __del__(self):
+        self.disconnect(
+            self.table, SIGNAL("aboutToChange"), self._deleteCursor)
+        self._deleteCursor()
+        pass  # print "PGTableModel.__del__"
 
-		#try:
-		#	self.cursor.scroll(row_start, mode='absolute')
-		#except self.db.error_types():
-		#	self._deleteCursor()
-		#	return self.fetchMoreData(row_start)
+    def fetchMoreData(self, row_start):
+        if not self.cursor:
+            self._createCursor()
 
-		self.resdata = self.cursor.fetchmany(self.fetchedCount)
-		self.fetchedFrom = row_start
+        # try:
+        #	self.cursor.scroll(row_start, mode='absolute')
+        # except self.db.error_types():
+        #	self._deleteCursor()
+        #	return self.fetchMoreData(row_start)
+
+        self.resdata = self.cursor.fetchmany(self.fetchedCount)
+        self.fetchedFrom = row_start
 
 
 class ORSqlResultModel(SqlResultModel):
-	def __init__(self, db, sql, parent=None):
-		self.db = db.connector
 
-		t = QTime()
-		t.start()
-		c = self.db._execute(None, unicode(sql))
+    def __init__(self, db, sql, parent=None):
+        self.db = db.connector
 
-		self._affectedRows = 0
-		data = []
-		header = self.db._get_cursor_columns(c)
-		if header == None:
-			header = []
+        t = QTime()
+        t.start()
+        c = self.db._execute(None, unicode(sql))
 
-		try:
-			if len(header) > 0:
-				data = self.db._fetchall(c)
-			self._affectedRows = c.rowcount
-		except DbError:
-			# nothing to fetch!
-			data = []
-			header = []
+        self._affectedRows = 0
+        data = []
+        header = self.db._get_cursor_columns(c)
+        if header == None:
+            header = []
 
-                self._secs = t.elapsed() / 1000.0
-		del t
+        try:
+            if len(header) > 0:
+                data = self.db._fetchall(c)
+            self._affectedRows = c.rowcount
+        except DbError:
+            # nothing to fetch!
+            data = []
+            header = []
 
-		BaseTableModel.__init__(self, header, data, parent)
+        self._secs = t.elapsed() / 1000.0
+        del t
 
-		# commit before closing the cursor to make sure that the changes are stored
-		self.db._commit()
-		c.close()
-		del c
+        BaseTableModel.__init__(self, header, data, parent)
 
-
-
-
+        # commit before closing the cursor to make sure that the changes are
+        # stored
+        self.db._commit()
+        c.close()
+        del c
